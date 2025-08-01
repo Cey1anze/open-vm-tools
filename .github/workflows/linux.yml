@@ -1,0 +1,149 @@
+name: Build open-vm-tools for Multiple Linux Distributions
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os.name }}
+    runs-on: ubuntu-latest
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - name: "Ubuntu 20.04"
+            image: "ubuntu:20.04"
+            deps: "apt-get update && apt-get install -y build-essential autoconf automake libtool pkg-config libglib2.0-dev libgtk-3-dev libgtkmm-3.0-dev libpam0g-dev libssl-dev libxss1-dev libicu-dev libxinerama-dev libxrandr-dev libxcursor-dev libxtst-dev libmspack-dev libudev-dev libdrm-dev libxcomposite-dev git cmake"
+            
+          - name: "Ubuntu 22.04"
+            image: "ubuntu:22.04"
+            deps: "apt-get update && apt-get install -y build-essential autoconf automake libtool pkg-config libglib2.0-dev libgtk-3-dev libgtkmm-3.0-dev libpam0g-dev libssl-dev libxss1-dev libicu-dev libxinerama-dev libxrandr-dev libxcursor-dev libxtst-dev libmspack-dev libudev-dev libdrm-dev libxcomposite-dev git cmake"
+            
+          - name: "CentOS 7"
+            image: "centos:7"
+            deps: "yum update -y && yum groupinstall -y 'Development Tools' && yum install -y autoconf automake libtool pkgconfig glib2-devel gtk3-devel gtkmm30-devel pam-devel openssl-devel libXss-devel libicu-devel libXinerama-devel libXrandr-devel libXcursor-devel libXtst-devel mspack-devel systemd-devel libdrm-devel libXcomposite-devel git cmake3"
+            
+          - name: "CentOS 8"
+            image: "centos:8"
+            deps: "sed -i 's/mirrorlist/#mirrorlist/g' /etc/yum.repos.d/CentOS-*.repo && sed -i 's|#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' /etc/yum.repos.d/CentOS-*.repo && yum update -y && yum groupinstall -y 'Development Tools' && yum install -y autoconf automake libtool pkgconfig glib2-devel gtk3-devel gtkmm30-devel pam-devel openssl-devel libXss-devel libicu-devel libXinerama-devel libXrandr-devel libXcursor-devel libXtst-devel libmspack-devel systemd-devel libdrm-devel libXcomposite-devel git cmake"
+            
+          - name: "Rocky Linux 8"
+            image: "rockylinux:8"
+            deps: "yum update -y && yum groupinstall -y 'Development Tools' && yum install -y autoconf automake libtool pkgconfig glib2-devel gtk3-devel gtkmm30-devel pam-devel openssl-devel libXss-devel libicu-devel libXinerama-devel libXrandr-devel libXcursor-devel libXtst-devel libmspack-devel systemd-devel libdrm-devel libXcomposite-devel git cmake"
+            
+          - name: "AlmaLinux 9"
+            image: "almalinux:9"
+            deps: "yum update -y && yum groupinstall -y 'Development Tools' && yum install -y autoconf automake libtool pkgconfig glib2-devel gtk3-devel gtkmm30-devel pam-devel openssl-devel libXss-devel libicu-devel libXinerama-devel libXrandr-devel libXcursor-devel libXtst-devel libmspack-devel systemd-devel libdrm-devel libXcomposite-devel git cmake"
+            
+          - name: "Debian 10"
+            image: "debian:10"
+            deps: "apt-get update && apt-get install -y build-essential autoconf automake libtool pkg-config libglib2.0-dev libgtk-3-dev libgtkmm-3.0-dev libpam0g-dev libssl-dev libxss1-dev libicu-dev libxinerama-dev libxrandr-dev libxcursor-dev libxtst-dev libmspack-dev libudev-dev libdrm-dev libxcomposite-dev git cmake"
+            
+          - name: "Debian 11"
+            image: "debian:11"
+            deps: "apt-get update && apt-get install -y build-essential autoconf automake libtool pkg-config libglib2.0-dev libgtk-3-dev libgtkmm-3.0-dev libpam0g-dev libssl-dev libxss1-dev libicu-dev libxinerama-dev libxrandr-dev libxcursor-dev libxtst-dev libmspack-dev libudev-dev libdrm-dev libxcomposite-dev git cmake"
+
+    container:
+      image: ${{ matrix.os.image }}
+
+    steps:
+    - name: Install dependencies
+      run: ${{ matrix.os.deps }}
+
+    - name: Checkout open-vm-tools source
+      uses: actions/checkout@v4
+      with:
+        repository: vmware/open-vm-tools
+        path: open-vm-tools
+        fetch-depth: 0
+
+    - name: Get latest version tag
+      working-directory: open-vm-tools
+      run: |
+        LATEST_TAG=$(git describe --tags --abbrev=0)
+        echo "Latest tag: $LATEST_TAG"
+        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_ENV
+        
+        git checkout $LATEST_TAG
+
+    - name: Configure timezone (for Debian/Ubuntu)
+      if: contains(matrix.os.image, 'ubuntu') || contains(matrix.os.image, 'debian')
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        ln -fs /usr/share/zoneinfo/UTC /etc/localtime
+
+    - name: Build open-vm-tools
+      working-directory: open-vm-tools/open-vm-tools
+      run: |
+        autoreconf -fiv
+        
+        ./configure \
+          --prefix=/usr \
+          --sysconfdir=/etc \
+          --localstatedir=/var \
+          --libdir=/usr/lib \
+          --enable-deploypkg \
+          --enable-servicediscovery \
+          --disable-tests \
+          --without-xerces \
+          --without-icu \
+          --without-x \
+          --without-gtk2 \
+          --without-gtkmm \
+          --without-kernel-modules
+        
+        make -j$(nproc)
+        
+        make DESTDIR=$PWD/install install
+
+    - name: Create archive
+      working-directory: open-vm-tools/open-vm-tools
+      run: |
+        OS_NAME=$(echo "${{ matrix.os.name }}" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+        
+        VERSION=${LATEST_TAG:-"unknown"}
+        echo "Building version: $VERSION for $OS_NAME"
+        
+        tar -czf "open-vm-tools-${VERSION}-${OS_NAME}.tar.gz" -C install .
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: open-vm-tools-${{ env.LATEST_TAG }}-${{ matrix.os.name }}
+        path: open-vm-tools/open-vm-tools/open-vm-tools-*.tar.gz
+        retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      
+    - name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        draft: false
+        prerelease: false
+        
+    - name: Upload Release Assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./open-vm-tools-*/open-vm-tools-*.tar.gz
+        asset_name: open-vm-tools-multi-platform.tar.gz
+        asset_content_type: application/gzip
